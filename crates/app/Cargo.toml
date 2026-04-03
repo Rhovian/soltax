@@ -1,0 +1,11 @@
+[package]
+name = "soltax-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+soltax-common = { path = "../common" }
+soltax-tax = { path = "../tax", default-features = false }
+leptos = { version = "0.7", features = ["csr"] }
+gloo-net = { version = "0.6", features = ["json"] }
+js-sys = "0.3"

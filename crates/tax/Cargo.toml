@@ -1,0 +1,26 @@
+[package]
+name = "soltax-tax"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+soltax-common = { path = "../common" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dotenvy = { version = "0.15", optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+
+[features]
+default = ["cli"]
+cli = ["dotenvy", "reqwest", "tokio"]
+
+[[bin]]
+name = "soltax-report"
+path = "src/bin/report.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "soltax-prices"
+path = "src/bin/prices.rs"
+required-features = ["cli"]
