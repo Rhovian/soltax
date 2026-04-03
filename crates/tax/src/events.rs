@@ -25,6 +25,8 @@ fn is_swap(tx: &EnhancedTransaction) -> bool {
 const NON_TAXABLE_TX_TYPES: &[&str] = &[
     "FLASH_REPAY_RESERVE_LIQUIDITY",
     "REFRESH_OBLIGATION",
+    "DEPOSIT",
+    "WITHDRAW",
 ];
 
 fn is_non_taxable_type(tx: &EnhancedTransaction) -> bool {
