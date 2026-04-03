@@ -48,12 +48,12 @@ fn auto_fill_known_prices(prices: &mut PriceMap, needed: &HashSet<String>) {
 
     for key in needed {
         let (mint, date) = key.split_once(':').unwrap();
-        if is_stablecoin(mint) && !prices.contains_key(key) {
+        let current = prices.get(key).copied().unwrap_or(0.0);
+        if is_stablecoin(mint) && current == 0.0 {
             prices.insert(key.clone(), 1.0);
             stable_count += 1;
         }
-        if is_sol_pegged(mint) && !prices.contains_key(key) {
-            // Copy from SOL price for the same date
+        if is_sol_pegged(mint) && current == 0.0 {
             let sol_key = format!("{SOL_MINT}:{date}");
             if let Some(&sol_price) = prices.get(&sol_key) {
                 prices.insert(key.clone(), sol_price);

@@ -15,7 +15,6 @@ pub const STABLECOINS: &[&str] = &[
 
 /// Tokens that track SOL price (LST wrappers, leveraged SOL, etc).
 pub const SOL_PEGGED: &[&str] = &[
-    "4sWNB8zGWHkh6UnmwiEtzNxL4XrN7uK9tosbESbJFfVs", // SOL-pegged
     "hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT",  // SOL-pegged
 ];
 
@@ -88,6 +87,7 @@ pub struct TaxEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Lot {
     pub mint: String,
     pub amount: f64,

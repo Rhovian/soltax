@@ -11,10 +11,14 @@ fn load_excluded_signatures() -> HashSet<String> {
         return HashSet::new();
     }
     let data = fs::read_to_string(path).unwrap_or_default();
-    serde_json::from_str::<Vec<String>>(&data)
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
+    // Support both formats: array of strings or object with reasons
+    if let Ok(arr) = serde_json::from_str::<Vec<String>>(&data) {
+        return arr.into_iter().collect();
+    }
+    if let Ok(obj) = serde_json::from_str::<std::collections::HashMap<String, String>>(&data) {
+        return obj.into_keys().collect();
+    }
+    HashSet::new()
 }
 
 pub fn apply(txs: Vec<EnhancedTransaction>, wallet: &str) -> Vec<EnhancedTransaction> {

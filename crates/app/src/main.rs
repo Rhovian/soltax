@@ -136,8 +136,10 @@ fn TaxReportView(records: ReadSignal<Vec<GainLoss>>) -> impl IntoView {
     let summaries = move || {
         let recs = records.get();
         let mut map: HashMap<String, MintSummary> = HashMap::new();
-        let mut total_gain = 0.0f64;
-        let mut total_loss = 0.0f64;
+        let mut st_gain = 0.0f64;
+        let mut st_loss = 0.0f64;
+        let mut lt_gain = 0.0f64;
+        let mut lt_loss = 0.0f64;
 
         for r in &recs {
             let s = map.entry(r.mint.clone()).or_insert(MintSummary {
@@ -150,12 +152,13 @@ fn TaxReportView(records: ReadSignal<Vec<GainLoss>>) -> impl IntoView {
             s.proceeds += r.proceeds_usd;
             s.basis += r.cost_basis_usd;
             s.count += 1;
+            let is_lt = r.holding_period == soltax_common::HoldingPeriod::LongTerm;
             if r.gain_loss_usd >= 0.0 {
                 s.gain += r.gain_loss_usd;
-                total_gain += r.gain_loss_usd;
+                if is_lt { lt_gain += r.gain_loss_usd; } else { st_gain += r.gain_loss_usd; }
             } else {
                 s.loss += r.gain_loss_usd;
-                total_loss += r.gain_loss_usd;
+                if is_lt { lt_loss += r.gain_loss_usd; } else { st_loss += r.gain_loss_usd; }
             }
             if r.cost_basis_usd == 0.0 && r.proceeds_usd > 0.01 {
                 s.zero_basis_count += 1;
@@ -165,37 +168,65 @@ fn TaxReportView(records: ReadSignal<Vec<GainLoss>>) -> impl IntoView {
         for s in map.values_mut() {
             s.net = s.gain + s.loss;
         }
-        let mut sorted: Vec<MintSummary> = map.into_values().collect();
+        let mut sorted: Vec<MintSummary> = map.into_values()
+            .filter(|s| s.net.abs() > 0.01)
+            .collect();
         sorted.sort_by(|a, b| b.net.abs().partial_cmp(&a.net.abs()).unwrap());
-        (sorted, total_gain, total_loss)
+        (sorted, st_gain, st_loss, lt_gain, lt_loss)
     };
 
     let mint_records = move || {
         let sel = selected_mint.get();
         let recs = records.get();
         match sel {
-            Some(mint) => recs.into_iter().filter(|r| r.mint == mint).collect::<Vec<_>>(),
+            Some(mint) => {
+                let mut filtered: Vec<_> = recs.into_iter()
+                    .filter(|r| r.mint == mint && r.gain_loss_usd.abs() > 0.005)
+                    .collect();
+                filtered.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                filtered
+            }
             None => vec![],
         }
     };
 
     view! {
         {move || {
-            let (sums, total_gain, total_loss) = summaries();
-            let net = total_gain + total_loss;
+            let (sums, st_gain, st_loss, lt_gain, lt_loss) = summaries();
+            let net = st_gain + st_loss + lt_gain + lt_loss;
+            let st_net = st_gain + st_loss;
+            let lt_net = lt_gain + lt_loss;
             let net_color = if net >= 0.0 { "#16a34a" } else { "#dc2626" };
+            let st_color = if st_net >= 0.0 { "#16a34a" } else { "#dc2626" };
+            let lt_color = if lt_net >= 0.0 { "#16a34a" } else { "#dc2626" };
             view! {
-                <div style="display: flex; gap: 2rem; margin-bottom: 1.5rem;">
-                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 150px;">
-                        <div style="font-size: 0.75rem; color: #666;">"Short-term Gains"</div>
-                        <div style="font-size: 1.25rem; color: #16a34a;">{format!("${total_gain:.2}")}</div>
+                <div style="display: flex; gap: 1.5rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"ST Gains"</div>
+                        <div style="font-size: 1.1rem; color: #16a34a;">{format!("${st_gain:.2}")}</div>
                     </div>
-                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 150px;">
-                        <div style="font-size: 0.75rem; color: #666;">"Short-term Losses"</div>
-                        <div style="font-size: 1.25rem; color: #dc2626;">{format!("${total_loss:.2}")}</div>
+                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"ST Losses"</div>
+                        <div style="font-size: 1.1rem; color: #dc2626;">{format!("${st_loss:.2}")}</div>
                     </div>
-                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 150px;">
-                        <div style="font-size: 0.75rem; color: #666;">"Net"</div>
+                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"ST Net"</div>
+                        <div style=format!("font-size: 1.1rem; font-weight: bold; color: {st_color};")>{format!("${st_net:.2}")}</div>
+                    </div>
+                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"LT Gains"</div>
+                        <div style="font-size: 1.1rem; color: #16a34a;">{format!("${lt_gain:.2}")}</div>
+                    </div>
+                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"LT Losses"</div>
+                        <div style="font-size: 1.1rem; color: #dc2626;">{format!("${lt_loss:.2}")}</div>
+                    </div>
+                    <div style="padding: 1rem; border: 1px solid #ddd; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"LT Net"</div>
+                        <div style=format!("font-size: 1.1rem; font-weight: bold; color: {lt_color};")>{format!("${lt_net:.2}")}</div>
+                    </div>
+                    <div style="padding: 1rem; border: 2px solid #333; border-radius: 4px; min-width: 140px;">
+                        <div style="font-size: 0.75rem; color: #666;">"Total Net"</div>
                         <div style=format!("font-size: 1.25rem; font-weight: bold; color: {net_color};")>{format!("${net:.2}")}</div>
                     </div>
                 </div>
@@ -253,74 +284,142 @@ fn TaxReportView(records: ReadSignal<Vec<GainLoss>>) -> impl IntoView {
         <Show when=move || selected_mint.get().is_some()>
             {move || {
                 let mint = selected_mint.get().unwrap_or_default();
-                let mint_short = short_addr(&mint);
                 let recs = mint_records();
+                let (disposal_records, _) = signal(recs);
                 view! {
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <h3>{format!("Disposals: {mint_short}")}</h3>
-                        <button
-                            style="padding: 0.25rem 0.75rem; cursor: pointer;"
-                            on:click=move |_| set_selected_mint.set(None)
-                        >"Close"</button>
-                    </div>
-                    <p style="font-family: monospace; font-size: 0.7rem; color: #666; margin-top: -0.5rem;">{mint.clone()}</p>
-                    <div style="max-height: 40vh; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;">
-                    <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
-                        <thead>
-                            <tr style="border-bottom: 2px solid #333; text-align: left; position: sticky; top: 0; background: white;">
-                                <th style="padding: 0.5rem;">"Date"</th>
-                                <th style="padding: 0.5rem; text-align: right;">"Amount"</th>
-                                <th style="padding: 0.5rem; text-align: right;">"Proceeds"</th>
-                                <th style="padding: 0.5rem; text-align: right;">"Basis"</th>
-                                <th style="padding: 0.5rem; text-align: right;">"Gain/Loss"</th>
-                                <th style="padding: 0.5rem;">"Holding"</th>
-                                <th style="padding: 0.5rem;">"Sig"</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {recs.into_iter().map(|r| {
-                                let date = format_date(r.timestamp);
-                                let gl_color = if r.gain_loss_usd >= 0.0 { "#16a34a" } else { "#dc2626" };
-                                let is_zero_basis = r.cost_basis_usd == 0.0 && r.proceeds_usd > 0.01;
-                                let row_bg = if is_zero_basis { "background: #fef3c7;" } else { "" };
-                                let holding = match r.holding_period {
-                                    soltax_common::HoldingPeriod::ShortTerm => "ST",
-                                    soltax_common::HoldingPeriod::LongTerm => "LT",
-                                };
-                                let sig_short = if r.signature.len() > 12 {
-                                    format!("{}…", &r.signature[..8])
-                                } else {
-                                    r.signature.clone()
-                                };
-                                let solscan_url = format!("https://solscan.io/tx/{}", r.signature);
-                                view! {
-                                    <tr style=format!("border-bottom: 1px solid #eee; {row_bg}")>
-                                        <td style="padding: 0.4rem 0.5rem; white-space: nowrap;">{date}</td>
-                                        <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace;">{format!("{:.4}", r.amount)}</td>
-                                        <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace;">{format!("${:.2}", r.proceeds_usd)}</td>
-                                        <td style=format!("padding: 0.4rem 0.5rem; text-align: right; font-family: monospace; {}", if is_zero_basis { "color: #b45309; font-weight: bold;" } else { "" })>
-                                            {format!("${:.2}", r.cost_basis_usd)}
-                                        </td>
-                                        <td style=format!("padding: 0.4rem 0.5rem; text-align: right; font-family: monospace; color: {gl_color};")>
-                                            {format!("${:.2}", r.gain_loss_usd)}
-                                        </td>
-                                        <td style="padding: 0.4rem 0.5rem;">{holding}</td>
-                                        <td style="padding: 0.4rem 0.5rem; font-family: monospace;">
-                                            <a href={solscan_url} target="_blank" style="color: #0066cc; text-decoration: none;">{sig_short}</a>
-                                        </td>
-                                    </tr>
-                                }
-                            }).collect::<Vec<_>>()}
-                        </tbody>
-                    </table>
-                    </div>
+                    <DisposalDetail
+                        mint=mint.clone()
+                        records=disposal_records
+                        on_close=Callback::new(move |_: ()| set_selected_mint.set(None))
+                    />
                 }
             }}
         </Show>
     }
 }
 
-// --- Transaction Table (unchanged) ---
+#[derive(Clone, Copy, PartialEq)]
+enum DisposalSortCol {
+    Date,
+    Amount,
+    Proceeds,
+    Basis,
+    GainLoss,
+}
+
+#[component]
+fn DisposalDetail(
+    mint: String,
+    records: ReadSignal<Vec<GainLoss>>,
+    on_close: Callback<()>,
+) -> impl IntoView {
+    let mint_short = short_addr(&mint);
+    let (sort_col, set_sort_col) = signal(DisposalSortCol::Date);
+    let (sort_dir, set_sort_dir) = signal(SortDir::Desc);
+
+    let on_sort = Callback::new(move |col: DisposalSortCol| {
+        if sort_col.get_untracked() == col {
+            set_sort_dir.set(sort_dir.get_untracked().toggle());
+        } else {
+            set_sort_col.set(col);
+            set_sort_dir.set(SortDir::Desc);
+        }
+    });
+
+    let sorted = move || {
+        let col = sort_col.get();
+        let dir = sort_dir.get();
+        let mut recs = records.get();
+        recs.sort_by(|a, b| {
+            let ord = match col {
+                DisposalSortCol::Date => a.timestamp.cmp(&b.timestamp),
+                DisposalSortCol::Amount => a.amount.partial_cmp(&b.amount).unwrap(),
+                DisposalSortCol::Proceeds => a.proceeds_usd.partial_cmp(&b.proceeds_usd).unwrap(),
+                DisposalSortCol::Basis => a.cost_basis_usd.partial_cmp(&b.cost_basis_usd).unwrap(),
+                DisposalSortCol::GainLoss => a.gain_loss_usd.partial_cmp(&b.gain_loss_usd).unwrap(),
+            };
+            match dir {
+                SortDir::Asc => ord,
+                SortDir::Desc => ord.reverse(),
+            }
+        });
+        recs
+    };
+
+    let th_style = "padding: 0.5rem; text-align: right; cursor: pointer; user-select: none;";
+
+    let make_header = move |label: &'static str, col: DisposalSortCol| {
+        view! {
+            <th style=th_style on:click=move |_| on_sort.run(col)>
+                {label}
+                {move || if sort_col.get() == col { sort_dir.get().arrow() } else { "" }}
+            </th>
+        }
+    };
+
+    view! {
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h3>{format!("Disposals: {mint_short}")}</h3>
+            <button
+                style="padding: 0.25rem 0.75rem; cursor: pointer;"
+                on:click=move |_| on_close.run(())
+            >"Close"</button>
+        </div>
+        <p style="font-family: monospace; font-size: 0.7rem; color: #666; margin-top: -0.5rem;">{mint.clone()}</p>
+        <div style="max-height: 40vh; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem;">
+            <thead>
+                <tr style="border-bottom: 2px solid #333; text-align: left; position: sticky; top: 0; background: white;">
+                    {make_header("Date", DisposalSortCol::Date)}
+                    {make_header("Amount", DisposalSortCol::Amount)}
+                    {make_header("Proceeds", DisposalSortCol::Proceeds)}
+                    {make_header("Basis", DisposalSortCol::Basis)}
+                    {make_header("Gain/Loss", DisposalSortCol::GainLoss)}
+                    <th style="padding: 0.5rem;">"Holding"</th>
+                    <th style="padding: 0.5rem;">"Sig"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {move || sorted().into_iter().map(|r| {
+                    let date = format_date(r.timestamp);
+                    let gl_color = if r.gain_loss_usd >= 0.0 { "#16a34a" } else { "#dc2626" };
+                    let is_zero_basis = r.cost_basis_usd == 0.0 && r.proceeds_usd > 0.01;
+                    let row_bg = if is_zero_basis { "background: #fef3c7;" } else { "" };
+                    let holding = match r.holding_period {
+                        soltax_common::HoldingPeriod::ShortTerm => "ST",
+                        soltax_common::HoldingPeriod::LongTerm => "LT",
+                    };
+                    let sig_short = if r.signature.len() > 12 {
+                        format!("{}…", &r.signature[..8])
+                    } else {
+                        r.signature.clone()
+                    };
+                    let solscan_url = format!("https://solscan.io/tx/{}", r.signature);
+                    view! {
+                        <tr style=format!("border-bottom: 1px solid #eee; {row_bg}")>
+                            <td style="padding: 0.4rem 0.5rem; white-space: nowrap;">{date}</td>
+                            <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace;">{format!("{:.4}", r.amount)}</td>
+                            <td style="padding: 0.4rem 0.5rem; text-align: right; font-family: monospace;">{format!("${:.2}", r.proceeds_usd)}</td>
+                            <td style=format!("padding: 0.4rem 0.5rem; text-align: right; font-family: monospace; {}", if is_zero_basis { "color: #b45309; font-weight: bold;" } else { "" })>
+                                {format!("${:.2}", r.cost_basis_usd)}
+                            </td>
+                            <td style=format!("padding: 0.4rem 0.5rem; text-align: right; font-family: monospace; color: {gl_color};")>
+                                {format!("${:.2}", r.gain_loss_usd)}
+                            </td>
+                            <td style="padding: 0.4rem 0.5rem;">{holding}</td>
+                            <td style="padding: 0.4rem 0.5rem; font-family: monospace;">
+                                <a href={solscan_url} target="_blank" style="color: #0066cc; text-decoration: none;">{sig_short}</a>
+                            </td>
+                        </tr>
+                    }
+                }).collect::<Vec<_>>()}
+            </tbody>
+        </table>
+        </div>
+    }
+}
+
+// --- Transaction Table ---
 
 fn format_date(ts: i64) -> String {
     let d = js_sys::Date::new_0();
