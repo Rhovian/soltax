@@ -1,19 +1,23 @@
 use soltax_common::{
-    EnhancedTransaction, Lot, PriceMap, SOL_MINT, TaxEvent, is_sol_pegged, is_stablecoin,
-    price_key, ts_to_date,
+    EnhancedTransaction, GainLoss, Lot, PriceMap, SOL_MINT, TaxEvent, is_sol_pegged,
+    is_stablecoin, price_key, ts_to_date,
 };
 use soltax_tax::{events, fifo, filter};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-const TX_FILE: &str = "data/transactions_2025.json";
+const TX_FILES: &[&str] = &[
+    "data/transactions_2024.json",
+    "data/transactions_2025.json",
+];
 const PRICES_FILE: &str = "data/prices.json";
 const LOTS_FILE: &str = "data/initial_lots.json";
 const TRACKED_FILE: &str = "data/tracked_tokens.json";
 const OUTPUT_EVENTS: &str = "data/tax_events.json";
 const OUTPUT_REPORT: &str = "data/gain_loss.json";
 const OUTPUT_REMAINING: &str = "data/remaining_lots.json";
+const MANUAL_GAINS_FILE: &str = "data/manual_gains.json";
 
 /// Well-known tokens that are auto-marked as tracked.
 const KNOWN_TOKENS: &[&str] = &[
@@ -142,10 +146,19 @@ fn resolve_tracked_tokens(all_events: &[TaxEvent]) -> Option<HashSet<String>> {
 fn main() {
     dotenvy::dotenv().ok();
 
-    // Load transactions
-    let tx_data = fs::read_to_string(TX_FILE).expect("failed to read transactions file");
-    let txs: Vec<EnhancedTransaction> =
-        serde_json::from_str(&tx_data).expect("failed to parse transactions");
+    // Load transactions from all years
+    let mut txs = Vec::new();
+    for tx_file in TX_FILES {
+        if !Path::new(tx_file).exists() {
+            eprintln!("skipping {tx_file} (not found)");
+            continue;
+        }
+        let tx_data = fs::read_to_string(tx_file).expect(&format!("failed to read {tx_file}"));
+        let file_txs: Vec<EnhancedTransaction> =
+            serde_json::from_str(&tx_data).expect(&format!("failed to parse {tx_file}"));
+        eprintln!("loaded {} transactions from {tx_file}", file_txs.len());
+        txs.extend(file_txs);
+    }
     let wallet = std::env::var("WALLET_ADDRESS").unwrap_or_else(|_| derive_wallet(&txs));
     eprintln!("wallet: {wallet}");
 
@@ -248,8 +261,10 @@ fn main() {
 
     // Run FIFO — need owned events
     let owned_events: Vec<TaxEvent> = tracked_events.into_iter().cloned().collect();
+    // Only report gain/loss for 2025 (Jan 1 2025 00:00 UTC)
+    let report_from: i64 = 1735689600;
     let mut engine = fifo::FifoEngine::new(initial_lots);
-    engine.process(&owned_events, &prices);
+    engine.process(&owned_events, &prices, Some(report_from));
 
     if !engine.missing_prices.is_empty() {
         eprintln!(
@@ -258,23 +273,92 @@ fn main() {
         );
     }
 
+    // Get remaining lots before moving results
+    let remaining_lots = engine.remaining_lots();
+
+    // Merge manual gains
+    let mut all_results = engine.results;
+    if Path::new(MANUAL_GAINS_FILE).exists() {
+        let data = fs::read_to_string(MANUAL_GAINS_FILE).unwrap();
+        let manual: Vec<GainLoss> = serde_json::from_str(&data).unwrap();
+        eprintln!("{} manual gain/loss entries loaded", manual.len());
+        all_results.extend(manual);
+    }
+
     // Write results
-    let report = serde_json::to_string_pretty(&engine.results).unwrap();
+    let report = serde_json::to_string_pretty(&all_results).unwrap();
     fs::write(OUTPUT_REPORT, &report).unwrap();
     eprintln!(
         "wrote {} gain/loss records to {OUTPUT_REPORT}",
-        engine.results.len()
+        all_results.len()
     );
 
-    let remaining = serde_json::to_string_pretty(&engine.remaining_lots()).unwrap();
+    let remaining = serde_json::to_string_pretty(&remaining_lots).unwrap();
     fs::write(OUTPUT_REMAINING, &remaining).unwrap();
 
-    // Summary
-    let summary = engine.summary();
+    // Summary (from all results including manual)
+    let summary = {
+        let mut s = fifo::TaxSummary {
+            short_term_gain: 0.0, short_term_loss: 0.0,
+            long_term_gain: 0.0, long_term_loss: 0.0, net: 0.0,
+        };
+        for gl in &all_results {
+            match gl.holding_period {
+                soltax_common::HoldingPeriod::ShortTerm => {
+                    if gl.gain_loss_usd >= 0.0 { s.short_term_gain += gl.gain_loss_usd; }
+                    else { s.short_term_loss += gl.gain_loss_usd; }
+                }
+                soltax_common::HoldingPeriod::LongTerm => {
+                    if gl.gain_loss_usd >= 0.0 { s.long_term_gain += gl.gain_loss_usd; }
+                    else { s.long_term_loss += gl.gain_loss_usd; }
+                }
+            }
+        }
+        s.net = s.short_term_gain + s.short_term_loss + s.long_term_gain + s.long_term_loss;
+        s
+    };
     eprintln!("\n=== 2025 Tax Summary ===");
     eprintln!("Short-term gains:  ${:.2}", summary.short_term_gain);
     eprintln!("Short-term losses: ${:.2}", summary.short_term_loss);
     eprintln!("Long-term gains:   ${:.2}", summary.long_term_gain);
     eprintln!("Long-term losses:  ${:.2}", summary.long_term_loss);
     eprintln!("Net:               ${:.2}", summary.net);
+
+    // Export Form 8949 CSV for TurboTax
+    let csv_path = "data/form_8949.csv";
+    let mut csv = String::new();
+    csv.push_str("Description,Date Acquired,Date Sold,Proceeds,Cost Basis,Gain or Loss,Term\n");
+
+    let mut sorted_results = all_results.clone();
+    sorted_results.sort_by_key(|r| r.timestamp);
+
+    for gl in &sorted_results {
+        if gl.gain_loss_usd.abs() < 0.01 {
+            continue;
+        }
+        let date_sold = ts_to_date(gl.timestamp);
+        let date_acquired = if gl.cost_basis_usd == 0.0 && gl.holding_period == soltax_common::HoldingPeriod::LongTerm {
+            "Various".to_string()
+        } else {
+            // Find the lot acquisition date from initial lots or use "Various"
+            "Various".to_string()
+        };
+        let term = match gl.holding_period {
+            soltax_common::HoldingPeriod::ShortTerm => "Short",
+            soltax_common::HoldingPeriod::LongTerm => "Long",
+        };
+        let mint_short = if gl.mint.len() > 8 {
+            format!("{}..{}", &gl.mint[..4], &gl.mint[gl.mint.len()-4..])
+        } else {
+            gl.mint.clone()
+        };
+        let desc = format!("{:.4} {} ({})", gl.amount, mint_short, &gl.signature[..8]);
+        csv.push_str(&format!(
+            "\"{}\",{},{},{:.2},{:.2},{:.2},{}\n",
+            desc, date_acquired, date_sold, gl.proceeds_usd, gl.cost_basis_usd, gl.gain_loss_usd, term
+        ));
+    }
+
+    fs::write(csv_path, &csv).unwrap();
+    eprintln!("wrote Form 8949 CSV to {csv_path}");
 }

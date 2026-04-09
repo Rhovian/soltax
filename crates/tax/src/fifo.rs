@@ -25,11 +25,13 @@ impl FifoEngine {
         }
     }
 
-    pub fn process(&mut self, events: &[TaxEvent], prices: &PriceMap) {
+    /// Process events. Only disposals at or after `report_from` generate gain/loss records.
+    /// Earlier disposals still consume lots (for correct FIFO ordering).
+    pub fn process(&mut self, events: &[TaxEvent], prices: &PriceMap, report_from: Option<i64>) {
         for event in events {
             match event.kind {
                 TaxEventKind::Acquisition => self.acquire(event, prices),
-                TaxEventKind::Disposal | TaxEventKind::Fee => self.dispose(event, prices),
+                TaxEventKind::Disposal | TaxEventKind::Fee => self.dispose(event, prices, report_from),
             }
         }
     }
@@ -56,7 +58,7 @@ impl FifoEngine {
             });
     }
 
-    fn dispose(&mut self, event: &TaxEvent, prices: &PriceMap) {
+    fn dispose(&mut self, event: &TaxEvent, prices: &PriceMap, report_from: Option<i64>) {
         let key = price_key(&event.mint, event.timestamp);
         let price_usd = match prices.get(&key) {
             Some(&p) => p,
@@ -101,15 +103,26 @@ impl FifoEngine {
             }
         }
 
-        let amount_disposed = event.amount - remaining;
-        if amount_disposed > 1e-12 {
+        let should_report = report_from.map_or(true, |from| event.timestamp >= from);
+
+        // If leftover is dust (< $1 proceeds), fold it into the main disposal
+        let dust_threshold = 5.0;
+        let remaining_proceeds = if remaining > 1e-12 {
+            remaining / event.amount * proceeds
+        } else {
+            0.0
+        };
+        let is_dust = remaining > 1e-12 && remaining_proceeds < dust_threshold;
+
+        let amount_disposed = if is_dust { event.amount } else { event.amount - remaining };
+        let proceeds_for_disposed = if is_dust { proceeds } else { amount_disposed / event.amount * proceeds };
+
+        if amount_disposed > 1e-12 && should_report {
             let holding = if event.timestamp - earliest_acquired >= ONE_YEAR_SECS {
                 HoldingPeriod::LongTerm
             } else {
                 HoldingPeriod::ShortTerm
             };
-
-            let proceeds_for_disposed = amount_disposed / event.amount * proceeds;
 
             self.results.push(GainLoss {
                 signature: event.signature.clone(),
@@ -123,8 +136,8 @@ impl FifoEngine {
             });
         }
 
-        // If remaining > 0, we ran out of lots
-        if remaining > 1e-12 {
+        // If remaining > dust threshold, record as zero-basis
+        if remaining > 1e-12 && !is_dust && should_report {
             let proceeds_for_unknown = remaining / event.amount * proceeds;
             self.results.push(GainLoss {
                 signature: event.signature.clone(),
@@ -217,7 +230,7 @@ mod tests {
         prices.insert(price_key("TOKEN", 1735700000), 2.0);
 
         let mut engine = FifoEngine::new(initial);
-        engine.process(&events, &prices);
+        engine.process(&events, &prices, None);
 
         assert_eq!(engine.results.len(), 1);
         let gl = &engine.results[0];
@@ -248,7 +261,7 @@ mod tests {
         prices.insert(price_key("T", 1735700000), 2.0);
 
         let mut engine = FifoEngine::new(initial);
-        engine.process(&events, &prices);
+        engine.process(&events, &prices, None);
 
         assert_eq!(engine.results.len(), 1);
         let gl = &engine.results[0];
